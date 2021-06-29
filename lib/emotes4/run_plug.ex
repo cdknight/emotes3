@@ -5,9 +5,9 @@ defmodule Emotes4.WebApplication do
   # https://dev.to/jonlunsford/elixir-building-a-small-json-endpoint-with-plug-cowboy-and-poison-1826
   # https://elixirschool.com/en/lessons/specifics/plug/
 
-  plug(Plug.Logger)
+  plug(Plug.Logger, log: :debug)
   plug(:match)
-  plug(Plug.Parsers, parsers: [:json], json_decoder: Poison)
+  plug(Plug.Parsers, parsers: [:json, :multipart], pass: ["*/*"], json_decoder: Poison)
   plug(:dispatch)
 
   get "/" do
@@ -17,7 +17,46 @@ defmodule Emotes4.WebApplication do
   post "/api/emotes" do
     # special handler since resizing and all that good stuff
 
-    conn |> send_resp(200, "test")
+    # NOTE you can't update an emote. Just delete and re-upload. This is by design.
+
+    # Get data
+
+    # We have to do this since multipart is the only way to upload a file. Maybe I should use GraphQL next time.
+    data = Poison.decode(conn.body_params["data"])
+    # IO.puts(data)
+
+    # Important pieces of data: folder (string), emote_file, emote_name
+
+    {status, resp} =
+      case Poison.decode(conn.body_params["data"]) do
+        {:ok, data} ->
+          case data do
+            %{"folder" => folder, "emote_name" => emote_name} ->
+              IO.puts("received all the important JSON data")
+              IO.puts(inspect(conn.body_params["emote_file"]))
+
+              emote_file = conn.body_params["emote_file"]
+
+              case emote_file do
+                %Plug.Upload{} ->
+                  # TODO verify the mimetype
+                  # TODO run the ffmpeg pipeline here and throw it in the db
+                  {200, err("uploaded")}
+
+                _ ->
+                  {400, err("Missing 'emote_file'. Please upload a valid file.")}
+              end
+
+            _ ->
+              # TODO be more specific
+              {400, err("Missing fields of 'folder,' or 'emote_name'")}
+          end
+
+        {:error, _, _} ->
+          {400, err("Malformed JSON data")}
+      end
+
+    conn |> send_resp(status, resp)
   end
 
   # Create or update
@@ -96,11 +135,12 @@ defmodule Emotes4.WebApplication do
 
                 IO.puts(inspect(item))
 
-                Memento.transaction!(fn ->
-                  Memento.Query.write(item)
-                end)
-
-                {200, err("updated")}
+                {200,
+                 json(
+                   Memento.transaction!(fn ->
+                     Memento.Query.write(item)
+                   end)
+                 )}
             end
 
           _ ->
